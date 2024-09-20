@@ -16,8 +16,11 @@
 
 package org.quiltmc.enigma_plugin;
 
+import org.jetbrains.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.quiltmc.enigma.api.Enigma;
 import org.quiltmc.enigma.api.EnigmaProfile;
@@ -37,11 +40,17 @@ import org.quiltmc.enigma.util.validation.ValidationContext;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 public class NameProposalTest {
 	private static final Path JAR = Path.of("build/obf/obf.jar");
 	private static final Path PROFILE = Path.of("build/resources/testInputs/profile.json");
 	private static EntryRemapper remapper;
+	private static Asserter asserter;
 
 	@BeforeAll
 	public static void setupEnigma() throws IOException {
@@ -55,24 +64,146 @@ public class NameProposalTest {
 		remapper.insertDynamicallyProposedMappings(null, null, null);
 	}
 
+	@BeforeEach
+	public void beforeEach() {
+		asserter = new Asserter();
+	}
+
+	@AfterEach
+	public void afterEach() {
+		String error = asserter.assertAll();
+		if (error != null && !error.isEmpty()) {
+			Assertions.fail(error + "\n");
+		}
+	}
+
+	private static final class Asserter {
+		private final List<Proposal> proposals = new ArrayList<>();
+
+		public Asserter() {
+		}
+
+		public Asserter add(Proposal proposal) {
+			this.proposals.add(proposal);
+			return this;
+		}
+
+		public @Nullable String assertAll() {
+			return this.proposals
+				.stream()
+				.filter(Predicate.not(Proposal::isValid))
+				.map(Proposal::getError)
+				.collect(Collectors.joining("\n"));
+		}
+
+		sealed interface Proposal permits Combo, Existing, Name, ProposalType {
+			boolean isValid();
+			String getError();
+		}
+
+		private record Combo(List<Proposal> nested, Entry<?> entry) implements Proposal {
+			Combo(Entry<?> entry) {
+				this(new ArrayList<>(), entry);
+			}
+
+			public Combo add(Proposal proposal) {
+				List<Proposal> copy = new ArrayList<>(this.nested);
+				copy.add(proposal);
+				return new Combo(copy, entry);
+			}
+
+			@Override
+			public boolean isValid() {
+				for (Proposal proposal : nested) {
+					if (!proposal.isValid()) return false;
+				}
+				return true;
+			}
+
+			@Override
+			public String getError() {
+				String nestedError = this.nested
+					.stream()
+					.filter(Predicate.not(Proposal::isValid))
+					.map(Proposal::getError)
+					.collect(Collectors.joining("\n\t", "\t", ""));
+
+				return String.format("Error with entry %s:\n%s", this.entry.getFullName(), nestedError);
+			}
+		}
+
+		private record Existing(Entry<?> entry) implements Proposal {
+			@Override
+			public boolean isValid() {
+				return remapper.getMapping(this.entry).targetName() != null;
+			}
+
+			@Override
+			public String getError() {
+				return String.format("Entry %s was not found in the remapper!", this.entry.getFullName());
+			}
+		}
+
+		private record Name(String name, Entry<?> entry) implements Proposal {
+			@Override
+			public boolean isValid() {
+				return Objects.equals(remapper.getMapping(this.entry).targetName(), this.name);
+			}
+
+			@Override
+			public String getError() {
+				return String.format("Entry %s has name %s, but expected %s", this.entry.getFullName(), remapper.getMapping(this.entry).targetName(), this.name);
+			}
+		}
+
+		private record ProposalType(TokenType type, Entry<?> entry) implements Proposal {
+			@Override
+			public boolean isValid() {
+				return Objects.equals(remapper.getMapping(this.entry).tokenType(), this.type);
+			}
+
+			@Override
+			public String getError() {
+				return String.format("Entry %s has token type %s, but expected %s", this.entry.getFullName(), remapper.getMapping(this.entry).tokenType(), this.type);
+			}
+		}
+	}
+
 	public static void assertProposal(String name, Entry<?> entry) {
-		var mapping = remapper.getMapping(entry);
-		Assertions.assertNotNull(mapping);
-		Assertions.assertEquals(name, mapping.targetName());
-		Assertions.assertEquals(TokenType.JAR_PROPOSED, mapping.tokenType());
+//		var mapping = remapper.getMapping(entry);
+		asserter.add(
+			new Asserter.Combo(entry)
+				.add(new Asserter.Existing(entry))
+				.add(new Asserter.Name(name, entry))
+				.add(new Asserter.ProposalType(TokenType.JAR_PROPOSED, entry))
+		);
+//		Assertions.assertNotNull(mapping);
+//		Assertions.assertEquals(name, mapping.targetName());
+//		Assertions.assertEquals(TokenType.JAR_PROPOSED, mapping.tokenType());
 	}
 
 	public static void assertDynamicProposal(String name, Entry<?> entry) {
-		var mapping = remapper.getMapping(entry);
-		Assertions.assertNotNull(mapping);
-		Assertions.assertEquals(name, mapping.targetName());
-		Assertions.assertEquals(TokenType.DYNAMIC_PROPOSED, mapping.tokenType());
+//		var mapping = remapper.getMapping(entry);
+		asserter.add(
+			new Asserter.Combo(entry)
+				.add(new Asserter.Existing(entry))
+				.add(new Asserter.Name(name, entry))
+				.add(new Asserter.ProposalType(TokenType.DYNAMIC_PROPOSED, entry))
+		);
+//		Assertions.assertNotNull(mapping);
+//		Assertions.assertEquals(name, mapping.targetName());
+//		Assertions.assertEquals(TokenType.DYNAMIC_PROPOSED, mapping.tokenType());
 	}
 
 	public static void assertNotProposed(Entry<?> entry) {
-		var mapping = remapper.getMapping(entry);
-		Assertions.assertNotNull(mapping);
-		Assertions.assertEquals(EntryMapping.OBFUSCATED, mapping);
+//		var mapping = remapper.getMapping(entry);
+		asserter.add(
+			new Asserter.Combo(entry)
+				.add(new Asserter.Existing(entry))
+				.add(new Asserter.ProposalType(TokenType.OBFUSCATED, entry))
+		);
+//		Assertions.assertNotNull(mapping);
+//		Assertions.assertEquals(EntryMapping.OBFUSCATED, mapping);
 	}
 
 	public static void assertNotProposedBy(Entry<?> entry, String unexpectedSourceProposerId) {
